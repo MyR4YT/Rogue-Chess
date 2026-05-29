@@ -1,0 +1,2264 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chess Rogue-lite</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #1a1a2e;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+        #game-container {
+            border: 4px solid #e94560;
+            box-shadow: 0 0 30px rgba(233, 69, 96, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container"></div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+    
+    <script>
+    const CONFIG = {
+        BOARD_SIZE: 6,
+        TILE_SIZE: 80,
+        BOARD_OFFSET_X: 240,
+        BOARD_OFFSET_Y: 100,
+        CARD_WIDTH: 100,
+        CARD_HEIGHT: 140,
+        MAX_HAND: 5,
+        WIN_SCORE: 50,
+        TURN_TIME: 30,
+        PLACEMENT_PENALTY: true, // Penalidade ao colocar peças
+    };
+
+    const PIECE_TYPES = {
+        PAWN: {
+            name: 'Peão',
+            symbol: '♟',
+            color: '#4ecca3',
+            points: 1,
+            description: 'Move 1 casa para frente ou captura na diagonal'
+        },
+        KNIGHT: {
+            name: 'Cavalo',
+            symbol: '♞',
+            color: '#f39c12',
+            points: 3,
+            moves: [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]],
+            description: 'Move em formato de L (2+1 casas)'
+        },
+        BISHOP: {
+            name: 'Bispo',
+            symbol: '♝',
+            color: '#9b59b6',
+            points: 3,
+            moves: [[-1,-1],[-1,1],[1,-1],[1,1]],
+            range: 3,
+            description: 'Move na diagonal (até 3 casas)'
+        },
+        ROOK: {
+            name: 'Torre',
+            symbol: '♜',
+            color: '#3498db',
+            points: 5,
+            moves: [[-1,0],[1,0],[0,-1],[0,1]],
+            range: 4,
+            description: 'Move em linha reta (até 4 casas)'
+        },
+        QUEEN: {
+            name: 'Rainha',
+            symbol: '♛',
+            color: '#e74c3c',
+            points: 9,
+            moves: [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]],
+            range: 4,
+            description: 'Move em qualquer direção (até 4 casas)'
+        }
+    };
+
+    // 🎯 NOVOS CORINGAS ADICIONADOS
+    const JOKER_TYPES = {
+        DOUBLE_MOVE: {
+            name: 'Movimento Duplo',
+            symbol: '⚡',
+            color: '#f1c40f',
+            description: 'Permite 2 movimentos neste turno',
+            effect: 'doubleMove'
+        },
+        SWAP: {
+            name: 'Troca de Peça',
+            symbol: '🔄',
+            color: '#3498db',
+            description: 'Troque uma peça inimiga de posição',
+            effect: 'swap'
+        },
+        DOUBLE_POINTS: {
+            name: 'Pontos Dobrados',
+            symbol: '✨',
+            color: '#e74c3c',
+            description: '2x pontos neste turno',
+            effect: 'doublePoints'
+        },
+        SHIELD: {
+            name: 'Escudo',
+            symbol: '🛡',
+            color: '#2ecc71',
+            description: 'Uma peça fica imune neste turno',
+            effect: 'shield'
+        },
+        EXTRA_DRAW: {
+            name: 'Compra Extra',
+            symbol: '🃏',
+            color: '#9b59b6',
+            description: 'Compre 2 cartas adicionais',
+            effect: 'extraDraw'
+        },
+        TELEPORT: {
+            name: 'Teleporte',
+            symbol: '🌀',
+            color: '#1abc9c',
+            description: 'Mova uma peça para qualquer casa vazia',
+            effect: 'teleport'
+        },
+        // 🆕 NOVOS CORINGAS
+        BOMB: {
+            name: 'Bomba',
+            symbol: '💣',
+            color: '#e74c3c',
+            description: 'Elimina uma peça inimiga aleatória',
+            effect: 'bomb'
+        },
+        REINFORCE: {
+            name: 'Reforço',
+            symbol: '📦',
+            color: '#16a085',
+            description: 'Adiciona 2 peças aleatórias à mão',
+            effect: 'reinforce'
+        },
+        TIME_WARP: {
+            name: 'Tempo Extra',
+            symbol: '⏰',
+            color: '#3498db',
+            description: '+15 segundos neste turno',
+            effect: 'timeWarp'
+        },
+        INVERT: {
+            name: 'Inverter',
+            symbol: '🔀',
+            color: '#9b59b6',
+            description: 'Troca posição de 2 peças inimigas',
+            effect: 'invert'
+        },
+        DUPLICATE: {
+            name: 'Duplicar',
+            symbol: '👥',
+            color: '#f39c12',
+            description: 'Copia uma peça sua para casa adjacente',
+            effect: 'duplicate'
+        },
+        POISON: {
+            name: 'Veneno',
+            symbol: '☠️',
+            color: '#27ae60',
+            description: 'Envenena peça inimiga (morre em 2 turnos)',
+            effect: 'poison'
+        }
+    };
+
+    class GameScene extends Phaser.Scene {
+        constructor() {
+            super({ key: 'GameScene' });
+        }
+
+        create() {
+            this.gameState = {
+                turn: 1,
+                phase: 'placement',
+                score: 0,
+                playerPieces: [],
+                enemyPieces: [],
+                hand: [],
+                jokerHand: [],
+                deck: [],
+                jokerDeck: [],
+                selectedCard: null,
+                selectedPiece: null,
+                movesThisTurn: 0,
+                maxMoves: 1,
+                pointsMultiplier: 1,
+                turnTime: CONFIG.TURN_TIME,
+                activeJokers: [],
+                gameOver: false,
+                teleportMode: false,
+                teleportPiece: null,
+                duplicateMode: false,
+                duplicatePiece: null
+            };
+
+            this.handCards = [];
+            this.jokerCards = [];
+
+            this.createBackground();
+            this.createBoard();
+            this.createUI();
+            this.initDecks();
+            
+            if (this.deckCountText) {
+                this.deckCountText.setText(`Deck: ${this.gameState.deck.length}`);
+            }
+            
+            this.drawCards(3);
+            this.drawJokers(2);
+            this.placeEnemyPieces();
+            this.setupTimer();
+            this.showInstructions();
+        }
+
+        createBackground() {
+            const graphics = this.add.graphics();
+            graphics.fillStyle(0x0f0f23, 1);
+            graphics.fillRect(0, 0, this.cameras.main.width, this.cameras.main.height);
+            
+            graphics.lineStyle(1, 0x1a1a3e, 0.3);
+            for (let i = 0; i < this.cameras.main.width; i += 40) {
+                graphics.moveTo(i, 0);
+                graphics.lineTo(i, this.cameras.main.height);
+            }
+            for (let i = 0; i < this.cameras.main.height; i += 40) {
+                graphics.moveTo(0, i);
+                graphics.lineTo(this.cameras.main.width, i);
+            }
+            graphics.strokePath();
+        }
+
+        createBoard() {
+            this.board = [];
+            this.boardGraphics = this.add.graphics();
+            this.boardTiles = [];
+
+            for (let row = 0; row < CONFIG.BOARD_SIZE; row++) {
+                this.board[row] = [];
+                this.boardTiles[row] = [];
+                for (let col = 0; col < CONFIG.BOARD_SIZE; col++) {
+                    const isLight = (row + col) % 2 === 0;
+                    const color = isLight ? 0x2d3436 : 0x1e272e;
+                    
+                    const x = CONFIG.BOARD_OFFSET_X + col * CONFIG.TILE_SIZE;
+                    const y = CONFIG.BOARD_OFFSET_Y + row * CONFIG.TILE_SIZE;
+                    
+                    this.boardGraphics.fillStyle(color, 1);
+                    this.boardGraphics.fillRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+                    
+                    this.boardGraphics.lineStyle(2, 0x4ecca3, 0.4);
+                    this.boardGraphics.strokeRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+                    
+                    this.board[row][col] = {
+                        piece: null,
+                        x: x,
+                        y: y,
+                        row: row,
+                        col: col
+                    };
+                    
+                    const tile = this.add.zone(
+                        x + CONFIG.TILE_SIZE / 2,
+                        y + CONFIG.TILE_SIZE / 2,
+                        CONFIG.TILE_SIZE,
+                        CONFIG.TILE_SIZE
+                    ).setInteractive();
+                    
+                    tile.row = row;
+                    tile.col = col;
+                    this.boardTiles[row][col] = tile;
+                    
+                    tile.on('pointerover', () => this.onTileHover(tile));
+                    tile.on('pointerout', () => this.onTileOut(tile));
+                    tile.on('pointerdown', () => this.onTileClick(tile));
+                }
+            }
+            
+            this.boardGraphics.lineStyle(4, 0xe94560, 1);
+            this.boardGraphics.strokeRect(
+                CONFIG.BOARD_OFFSET_X,
+                CONFIG.BOARD_OFFSET_Y,
+                CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE,
+                CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE
+            );
+        }
+
+        initDecks() {
+            const pieceKeys = Object.keys(PIECE_TYPES);
+            this.gameState.deck = [];
+            
+            pieceKeys.forEach(key => {
+                const count = key === 'PAWN' ? 5 : key === 'QUEEN' ? 1 : 3;
+                for (let i = 0; i < count; i++) {
+                    this.gameState.deck.push({
+                        type: key,
+                        ...PIECE_TYPES[key]
+                    });
+                }
+            });
+            
+            this.shuffleArray(this.gameState.deck);
+            
+            const jokerKeys = Object.keys(JOKER_TYPES);
+            this.gameState.jokerDeck = [];
+            
+            jokerKeys.forEach(key => {
+                for (let i = 0; i < 2; i++) {
+                    this.gameState.jokerDeck.push({
+                        type: key,
+                        ...JOKER_TYPES[key]
+                    });
+                }
+            });
+            
+            this.shuffleArray(this.gameState.jokerDeck);
+        }
+
+        placeEnemyPieces() {
+            const enemySetup = [
+                { type: 'PAWN', row: 1, col: 1 },
+                { type: 'PAWN', row: 1, col: 2 },
+                { type: 'PAWN', row: 1, col: 3 },
+                { type: 'PAWN', row: 1, col: 4 },
+                { type: 'ROOK', row: 0, col: 0 },
+                { type: 'KNIGHT', row: 0, col: 1 },
+                { type: 'BISHOP', row: 0, col: 2 },
+                { type: 'QUEEN', row: 0, col: 3 },
+                { type: 'KNIGHT', row: 0, col: 4 },
+                { type: 'ROOK', row: 0, col: 5 },
+            ];
+
+            enemySetup.forEach(setup => {
+                this.createPieceOnBoard(setup.type, setup.row, setup.col, 'enemy');
+            });
+        }
+
+        createPieceOnBoard(type, row, col, owner) {
+            const pieceData = PIECE_TYPES[type];
+            const x = CONFIG.BOARD_OFFSET_X + col * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const y = CONFIG.BOARD_OFFSET_Y + row * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            
+            const container = this.add.container(x, y);
+            
+            const shadow = this.add.graphics();
+            shadow.fillStyle(0x000000, 0.3);
+            shadow.fillCircle(3, 3, 28);
+            container.add(shadow);
+            
+            const body = this.add.graphics();
+            let bodyColor;
+            if (owner === 'player') {
+                bodyColor = Phaser.Display.Color.HexStringToColor(pieceData.color).color;
+            } else {
+                bodyColor = 0x6c5ce7;
+            }
+            body.fillStyle(bodyColor, 1);
+            body.fillCircle(0, 0, 28);
+            body.lineStyle(3, 0xffffff, 0.7);
+            body.strokeCircle(0, 0, 28);
+            container.add(body);
+            
+            const symbol = this.add.text(0, 0, pieceData.symbol, {
+                fontSize: '28px',
+                color: '#ffffff',
+                fontFamily: 'Courier New',
+                stroke: '#000000',
+                strokeThickness: 3
+            }).setOrigin(0.5);
+            container.add(symbol);
+            
+            const indicator = this.add.graphics();
+            const indicatorColor = owner === 'player' ? 0x4ecca3 : 0xe94560;
+            indicator.fillStyle(indicatorColor, 1);
+            indicator.fillCircle(20, -20, 6);
+            container.add(indicator);
+            
+            const piece = {
+                type: type,
+                owner: owner,
+                row: row,
+                col: col,
+                container: container,
+                data: pieceData,
+                isShielded: false,
+                movesMade: 0,
+                poisonTurns: 0 // Para efeito de veneno
+            };
+            
+            this.board[row][col].piece = piece;
+            
+            if (owner === 'player') {
+                this.gameState.playerPieces.push(piece);
+            } else {
+                this.gameState.enemyPieces.push(piece);
+            }
+            
+            const hitZone = this.add.zone(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE).setInteractive();
+            hitZone.piece = piece;
+            hitZone.on('pointerdown', () => this.onPieceClick(piece));
+            piece.hitZone = hitZone;
+            
+            container.setScale(0);
+            this.tweens.add({
+                targets: container,
+                scale: 1,
+                duration: 300,
+                ease: 'Back.easeOut'
+            });
+            
+            return piece;
+        }
+
+        drawCards(count) {
+            for (let i = 0; i < count; i++) {
+                if (this.gameState.hand.length >= CONFIG.MAX_HAND) break;
+                if (this.gameState.deck.length === 0) {
+                    this.gameState.deck = this.shuffleArray([...this.gameState.deck]);
+                }
+                if (this.gameState.deck.length > 0) {
+                    const card = this.gameState.deck.pop();
+                    this.gameState.hand.push(card);
+                }
+            }
+            this.updateHandUI();
+        }
+
+        drawJokers(count) {
+            for (let i = 0; i < count; i++) {
+                if (this.gameState.jokerHand.length >= 3) break;
+                if (this.gameState.jokerDeck.length > 0) {
+                    const joker = this.gameState.jokerDeck.pop();
+                    this.gameState.jokerHand.push(joker);
+                }
+            }
+            this.updateJokerUI();
+        }
+
+        createUI() {
+            this.uiPanel = this.add.graphics();
+            this.uiPanel.fillStyle(0x16213e, 0.9);
+            this.uiPanel.fillRoundedRect(10, 10, 220, 280, 8);
+            this.uiPanel.lineStyle(2, 0xe94560, 1);
+            this.uiPanel.strokeRoundedRect(10, 10, 220, 280, 8);
+
+            this.add.text(120, 25, '♚ CHESS ROGUE', {
+                fontSize: '16px',
+                color: '#e94560',
+                fontFamily: 'Courier New',
+                fontStyle: 'bold'
+            }).setOrigin(0.5);
+
+            this.turnText = this.add.text(20, 50, `Turno: ${this.gameState.turn}`, {
+                fontSize: '14px',
+                color: '#ffffff',
+                fontFamily: 'Courier New'
+            });
+
+            this.scoreText = this.add.text(20, 75, `Pontos: ${this.gameState.score}/${CONFIG.WIN_SCORE}`, {
+                fontSize: '14px',
+                color: '#4ecca3',
+                fontFamily: 'Courier New'
+            });
+
+            this.phaseText = this.add.text(20, 100, `Fase: Colocação`, {
+                fontSize: '14px',
+                color: '#f1c40f',
+                fontFamily: 'Courier New'
+            });
+
+            this.timerText = this.add.text(20, 125, `⏱ ${this.gameState.turnTime}s`, {
+                fontSize: '14px',
+                color: '#ffffff',
+                fontFamily: 'Courier New'
+            });
+
+            this.movesText = this.add.text(20, 150, `Movimentos: 1`, {
+                fontSize: '14px',
+                color: '#ffffff',
+                fontFamily: 'Courier New'
+            });
+
+            this.multiplierText = this.add.text(20, 175, `Multiplicador: x1`, {
+                fontSize: '14px',
+                color: '#ffffff',
+                fontFamily: 'Courier New'
+            });
+
+            this.deckCountText = this.add.text(20, 200, `Deck: ${this.gameState.deck.length}`, {
+                fontSize: '12px',
+                color: '#95a5a6',
+                fontFamily: 'Courier New'
+            });
+
+            this.endTurnBtn = this.add.text(20, 230, '[ FINALIZAR TURNO ]', {
+                fontSize: '13px',
+                color: '#e94560',
+                fontFamily: 'Courier New',
+                fontStyle: 'bold',
+                padding: { x: 10, y: 8 }
+            }).setInteractive();
+            
+            this.endTurnBtn.on('pointerover', () => this.endTurnBtn.setColor('#ffffff'));
+            this.endTurnBtn.on('pointerout', () => this.endTurnBtn.setColor('#e94560'));
+            this.endTurnBtn.on('pointerdown', () => this.endTurn());
+
+            this.helpBtn = this.add.text(20, 265, '[ ? AJUDA ]', {
+                fontSize: '12px',
+                color: '#95a5a6',
+                fontFamily: 'Courier New',
+                padding: { x: 10, y: 5 }
+            }).setInteractive();
+            this.helpBtn.on('pointerdown', () => this.toggleHelp());
+
+            this.createHandArea();
+            this.createJokerArea();
+            this.createLogArea();
+        }
+
+        createHandArea() {
+            const handBg = this.add.graphics();
+            handBg.fillStyle(0x16213e, 0.8);
+            handBg.fillRoundedRect(
+                CONFIG.BOARD_OFFSET_X - 20,
+                CONFIG.BOARD_OFFSET_Y + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE + 20,
+                CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE + 40,
+                CONFIG.CARD_HEIGHT + 40,
+                8
+            );
+
+            this.add.text(
+                CONFIG.BOARD_OFFSET_X + (CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE) / 2,
+                CONFIG.BOARD_OFFSET_Y + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE + 25,
+                '📋 SUAS PEÇAS (Clique para selecionar, depois clique no tabuleiro)', {
+                fontSize: '12px',
+                color: '#ffffff',
+                fontFamily: 'Courier New'
+            }).setOrigin(0.5);
+
+            this.handCards = [];
+            this.handContainer = this.add.container(0, 0);
+        }
+
+        updateHandUI() {
+            this.handCards.forEach(card => card.container.destroy());
+            this.handCards = [];
+
+            const startX = CONFIG.BOARD_OFFSET_X;
+            const startY = CONFIG.BOARD_OFFSET_Y + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE + 40;
+
+            this.gameState.hand.forEach((card, index) => {
+                const cardContainer = this.createCardVisual(
+                    card,
+                    startX + index * (CONFIG.CARD_WIDTH + 10),
+                    startY
+                );
+                this.handCards.push(cardContainer);
+            });
+        }
+
+        createCardVisual(cardData, x, y) {
+            const container = this.add.container(x + CONFIG.CARD_WIDTH/2, y + CONFIG.CARD_HEIGHT/2);
+            
+            const bg = this.add.graphics();
+            bg.fillStyle(0x1a1a2e, 1);
+            bg.fillRoundedRect(-CONFIG.CARD_WIDTH/2, -CONFIG.CARD_HEIGHT/2, CONFIG.CARD_WIDTH, CONFIG.CARD_HEIGHT, 6);
+            bg.lineStyle(2, Phaser.Display.Color.HexStringToColor(cardData.color).color, 1);
+            bg.strokeRoundedRect(-CONFIG.CARD_WIDTH/2, -CONFIG.CARD_HEIGHT/2, CONFIG.CARD_WIDTH, CONFIG.CARD_HEIGHT, 6);
+            container.add(bg);
+
+            const symbol = this.add.text(0, -25, cardData.symbol, {
+                fontSize: '32px',
+                color: cardData.color,
+                fontFamily: 'Courier New'
+            }).setOrigin(0.5);
+            container.add(symbol);
+
+            const name = this.add.text(0, 10, cardData.name, {
+                fontSize: '11px',
+                color: '#ffffff',
+                fontFamily: 'Courier New',
+                fontStyle: 'bold'
+            }).setOrigin(0.5);
+            container.add(name);
+
+            const points = this.add.text(0, 30, `${cardData.points}pts`, {
+                fontSize: '10px',
+                color: '#4ecca3',
+                fontFamily: 'Courier New'
+            }).setOrigin(0.5);
+            container.add(points);
+
+            const desc = this.add.text(0, 50, cardData.description || '', {
+                fontSize: '8px',
+                color: '#95a5a6',
+                fontFamily: 'Courier New',
+                align: 'center',
+                wordWrap: { width: CONFIG.CARD_WIDTH - 10 }
+            }).setOrigin(0.5);
+            container.add(desc);
+
+            const hitZone = this.add.rectangle(0, 0, CONFIG.CARD_WIDTH, CONFIG.CARD_HEIGHT)
+                .setInteractive();
+            container.add(hitZone);
+
+            hitZone.on('pointerover', () => {
+                this.tweens.add({
+                    targets: container,
+                    y: y + CONFIG.CARD_HEIGHT/2 - 10,
+                    duration: 150,
+                    ease: 'Power2'
+                });
+            });
+            hitZone.on('pointerout', () => {
+                this.tweens.add({
+                    targets: container,
+                    y: y + CONFIG.CARD_HEIGHT/2,
+                    duration: 150,
+                    ease: 'Power2'
+                });
+            });
+            hitZone.on('pointerdown', () => this.selectCard(cardData, container));
+
+            container.setScale(0);
+            this.tweens.add({
+                targets: container,
+                scale: 1,
+                duration: 300,
+                ease: 'Back.easeOut',
+                delay: container.list.length * 50
+            });
+
+            return { container, data: cardData, hitZone };
+        }
+
+        createJokerArea() {
+            const jokerBg = this.add.graphics();
+            jokerBg.fillStyle(0x16213e, 0.9);
+            jokerBg.fillRoundedRect(
+                CONFIG.BOARD_OFFSET_X + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE + 20,
+                CONFIG.BOARD_OFFSET_Y,
+                180,
+                CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE,
+                8
+            );
+
+            this.add.text(
+                CONFIG.BOARD_OFFSET_X + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE + 110,
+                CONFIG.BOARD_OFFSET_Y + 10,
+                '🃏 CORINGAS', {
+                fontSize: '14px',
+                color: '#f1c40f',
+                fontFamily: 'Courier New',
+                fontStyle: 'bold'
+            }).setOrigin(0.5);
+
+            this.add.text(
+                CONFIG.BOARD_OFFSET_X + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE + 110,
+                CONFIG.BOARD_OFFSET_Y + 30,
+                'Clique para ativar', {
+                fontSize: '10px',
+                color: '#95a5a6',
+                fontFamily: 'Courier New'
+            }).setOrigin(0.5);
+
+            this.jokerCards = [];
+        }
+
+        updateJokerUI() {
+            this.jokerCards.forEach(card => card.container.destroy());
+            this.jokerCards = [];
+
+            const startX = CONFIG.BOARD_OFFSET_X + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE + 30;
+            const startY = CONFIG.BOARD_OFFSET_Y + 50;
+
+            this.gameState.jokerHand.forEach((joker, index) => {
+                const container = this.createJokerVisual(joker, startX, startY + index * 80);
+                this.jokerCards.push(container);
+            });
+        }
+
+        createJokerVisual(jokerData, x, y) {
+            const container = this.add.container(x + 75, y + 30);
+            
+            const bg = this.add.graphics();
+            bg.fillStyle(0x2d3436, 1);
+            bg.fillRoundedRect(-75, -30, 150, 60, 6);
+            bg.lineStyle(2, Phaser.Display.Color.HexStringToColor(jokerData.color).color, 1);
+            bg.strokeRoundedRect(-75, -30, 150, 60, 6);
+            container.add(bg);
+
+            const symbol = this.add.text(-55, 0, jokerData.symbol, {
+                fontSize: '24px'
+            }).setOrigin(0.5);
+            container.add(symbol);
+
+            const name = this.add.text(-30, -8, jokerData.name, {
+                fontSize: '10px',
+                color: jokerData.color,
+                fontFamily: 'Courier New',
+                fontStyle: 'bold'
+            });
+            container.add(name);
+
+            const desc = this.add.text(-30, 8, jokerData.description, {
+                fontSize: '8px',
+                color: '#bdc3c7',
+                fontFamily: 'Courier New',
+                wordWrap: { width: 110 }
+            });
+            container.add(desc);
+
+            const hitZone = this.add.rectangle(0, 0, 150, 60).setInteractive();
+            container.add(hitZone);
+            
+            hitZone.on('pointerover', () => {
+                container.setAlpha(0.8);
+            });
+            hitZone.on('pointerout', () => {
+                container.setAlpha(1);
+            });
+            hitZone.on('pointerdown', () => this.activateJoker(jokerData, container));
+
+            container.setScale(0);
+            this.tweens.add({
+                targets: container,
+                scale: 1,
+                duration: 300,
+                ease: 'Back.easeOut'
+            });
+
+            return { container, data: jokerData };
+        }
+
+        createLogArea() {
+            const logBg = this.add.graphics();
+            logBg.fillStyle(0x16213e, 0.9);
+            logBg.fillRoundedRect(
+                CONFIG.BOARD_OFFSET_X + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE + 20,
+                CONFIG.BOARD_OFFSET_Y + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE - 100,
+                180,
+                100,
+                8
+            );
+
+            this.add.text(
+                CONFIG.BOARD_OFFSET_X + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE + 110,
+                CONFIG.BOARD_OFFSET_Y + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE - 95,
+                '📜 LOG', {
+                fontSize: '11px',
+                color: '#ffffff',
+                fontFamily: 'Courier New'
+            }).setOrigin(0.5);
+
+            this.logText = this.add.text(
+                CONFIG.BOARD_OFFSET_X + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE + 30,
+                CONFIG.BOARD_OFFSET_Y + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE - 75,
+                'Jogo iniciado!\nColoque suas peças.', {
+                fontSize: '9px',
+                color: '#bdc3c7',
+                fontFamily: 'Courier New',
+                wordWrap: { width: 160 }
+            });
+        }
+
+        selectCard(cardData, container) {
+            if (this.gameState.selectedCard) {
+                this.gameState.selectedCard.container.setAlpha(1);
+            }
+
+            this.gameState.selectedCard = { data: cardData, container: container };
+            container.setAlpha(0.7);
+            
+            this.addLog(`Selecionou: ${cardData.name}`);
+            this.highlightValidPlacements();
+        }
+
+        highlightValidPlacements() {
+            this.clearHighlights();
+            
+            for (let row = 4; row < CONFIG.BOARD_SIZE; row++) {
+                for (let col = 0; col < CONFIG.BOARD_SIZE; col++) {
+                    if (!this.board[row][col].piece) {
+                        const x = CONFIG.BOARD_OFFSET_X + col * CONFIG.TILE_SIZE;
+                        const y = CONFIG.BOARD_OFFSET_Y + row * CONFIG.TILE_SIZE;
+                        
+                        const highlight = this.add.graphics();
+                        highlight.fillStyle(0x4ecca3, 0.3);
+                        highlight.fillRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+                        highlight.lineStyle(2, 0x4ecca3, 0.8);
+                        highlight.strokeRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+                        
+                        if (!this.highlights) this.highlights = [];
+                        this.highlights.push(highlight);
+                    }
+                }
+            }
+        }
+
+        highlightValidMoves(piece) {
+            this.clearHighlights();
+            this.highlights = [];
+            
+            const validMoves = this.getValidMoves(piece);
+            
+            validMoves.forEach(move => {
+                const x = CONFIG.BOARD_OFFSET_X + move.col * CONFIG.TILE_SIZE;
+                const y = CONFIG.BOARD_OFFSET_Y + move.row * CONFIG.TILE_SIZE;
+                
+                const highlight = this.add.graphics();
+                
+                const targetPiece = this.board[move.row][move.col].piece;
+                if (targetPiece && targetPiece.owner === 'enemy') {
+                    highlight.fillStyle(0xe94560, 0.4);
+                } else {
+                    highlight.fillStyle(0x4ecca3, 0.3);
+                }
+                
+                highlight.fillRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+                highlight.lineStyle(2, 0x4ecca3, 0.8);
+                highlight.strokeRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+                
+                this.highlights.push(highlight);
+            });
+        }
+
+        // 🎯 MODO TELEPORTE: Destaca TODAS as casas vazias
+        highlightTeleportMoves() {
+            this.clearHighlights();
+            this.highlights = [];
+            
+            for (let row = 0; row < CONFIG.BOARD_SIZE; row++) {
+                for (let col = 0; col < CONFIG.BOARD_SIZE; col++) {
+                    if (!this.board[row][col].piece) {
+                        const x = CONFIG.BOARD_OFFSET_X + col * CONFIG.TILE_SIZE;
+                        const y = CONFIG.BOARD_OFFSET_Y + row * CONFIG.TILE_SIZE;
+                        
+                        const highlight = this.add.graphics();
+                        highlight.fillStyle(0x1abc9c, 0.3); // Ciano para teleporte
+                        highlight.fillRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+                        highlight.lineStyle(2, 0x1abc9c, 0.8);
+                        highlight.strokeRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+                        
+                        this.highlights.push(highlight);
+                    }
+                }
+            }
+        }
+
+        getValidMoves(piece) {
+            const moves = [];
+            
+            if (piece.type === 'PAWN') {
+                const direction = piece.owner === 'player' ? -1 : 1;
+                
+                const forwardRow = piece.row + direction;
+                if (this.isValidPosition(forwardRow, piece.col)) {
+                    const forwardCell = this.board[forwardRow][piece.col];
+                    if (!forwardCell.piece) {
+                        moves.push({ row: forwardRow, col: piece.col });
+                    }
+                }
+                
+                const captureRow = piece.row + direction;
+                const captureCols = [piece.col - 1, piece.col + 1];
+                
+                captureCols.forEach(col => {
+                    if (this.isValidPosition(captureRow, col)) {
+                        const cell = this.board[captureRow][col];
+                        if (cell.piece && cell.piece.owner !== piece.owner) {
+                            moves.push({ row: captureRow, col: col });
+                        }
+                    }
+                });
+            } else {
+                const pieceType = PIECE_TYPES[piece.type];
+                const range = pieceType.range || 1;
+                
+                pieceType.moves.forEach(([dy, dx]) => {
+                    for (let i = 1; i <= range; i++) {
+                        const newRow = piece.row + (dy * i);
+                        const newCol = piece.col + (dx * i);
+                        
+                        if (!this.isValidPosition(newRow, newCol)) {
+                            break;
+                        }
+                        
+                        const targetCell = this.board[newRow][newCol];
+                        
+                        if (targetCell.piece) {
+                            if (targetCell.piece.owner !== piece.owner) {
+                                moves.push({ row: newRow, col: newCol });
+                            }
+                            break;
+                        }
+                        
+                        moves.push({ row: newRow, col: newCol });
+                    }
+                });
+            }
+            
+            return moves;
+        }
+
+        isValidPosition(row, col) {
+            return row >= 0 && row < CONFIG.BOARD_SIZE && 
+                   col >= 0 && col < CONFIG.BOARD_SIZE;
+        }
+
+        clearHighlights() {
+            if (this.highlights) {
+                this.highlights.forEach(h => h.destroy());
+                this.highlights = [];
+            }
+        }
+
+        onPieceClick(piece) {
+            if (this.gameState.gameOver) return;
+            
+            // 🎯 MODO TELEPORTE: Seleciona peça para teleportar
+            if (this.gameState.teleportMode && piece.owner === 'player') {
+                this.gameState.teleportPiece = piece;
+                this.addLog(`Peça selecionada para teleporte: ${piece.data.name}`);
+                this.highlightTeleportMoves();
+                
+                // Efeito visual na peça selecionada
+                this.tweens.add({
+                    targets: piece.container,
+                    scale: 1.3,
+                    duration: 200,
+                    yoyo: true
+                });
+                return;
+            }
+            
+            // 🎯 MODO DUPLICAR: Seleciona peça para duplicar
+            if (this.gameState.duplicateMode && piece.owner === 'player') {
+                this.gameState.duplicatePiece = piece;
+                this.addLog(`Peça selecionada para duplicar: ${piece.data.name}`);
+                this.highlightAdjacentEmpty(piece);
+                return;
+            }
+            
+            if (piece.owner === 'player' && this.gameState.movesThisTurn < this.gameState.maxMoves) {
+                this.gameState.selectedPiece = piece;
+                
+                this.tweens.add({
+                    targets: piece.container,
+                    scale: 1.2,
+                    duration: 150,
+                    yoyo: true
+                });
+                
+                this.highlightValidMoves(piece);
+                this.addLog(`Peça selecionada: ${piece.data.name}`);
+            } else if (piece.owner === 'enemy' && this.gameState.selectedPiece) {
+                this.addLog(`Tentando capturar ${piece.data.name}...`);
+                this.tryMovePiece(piece.row, piece.col);
+            } else if (piece.owner === 'enemy' && !this.gameState.selectedPiece) {
+                this.addLog('Selecione uma peça sua primeiro!');
+            }
+        }
+
+        // 🎯 Destaca casas adjacentes vazias (para duplicar)
+        highlightAdjacentEmpty(piece) {
+            this.clearHighlights();
+            this.highlights = [];
+            
+            const directions = [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]];
+            
+            directions.forEach(([dy, dx]) => {
+                const newRow = piece.row + dy;
+                const newCol = piece.col + dx;
+                
+                if (this.isValidPosition(newRow, newCol) && !this.board[newRow][newCol].piece) {
+                    const x = CONFIG.BOARD_OFFSET_X + newCol * CONFIG.TILE_SIZE;
+                    const y = CONFIG.BOARD_OFFSET_Y + newRow * CONFIG.TILE_SIZE;
+                    
+                    const highlight = this.add.graphics();
+                    highlight.fillStyle(0xf39c12, 0.3); // Laranja para duplicar
+                    highlight.fillRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+                    highlight.lineStyle(2, 0xf39c12, 0.8);
+                    highlight.strokeRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+                    
+                    this.highlights.push(highlight);
+                }
+            });
+        }
+
+        onTileClick(tile) {
+            if (this.gameState.gameOver) return;
+            
+            const { row, col } = tile;
+            
+            // 🎯 MODO TELEPORTE: Teleporta peça selecionada
+            if (this.gameState.teleportMode && this.gameState.teleportPiece) {
+                const cell = this.board[row][col];
+                if (!cell.piece) {
+                    this.teleportPiece(this.gameState.teleportPiece, row, col);
+                    this.gameState.teleportMode = false;
+                    this.gameState.teleportPiece = null;
+                    this.clearHighlights();
+                }
+                return;
+            }
+            
+            // 🎯 MODO DUPLICAR: Duplica peça selecionada
+            if (this.gameState.duplicateMode && this.gameState.duplicatePiece) {
+                const cell = this.board[row][col];
+                if (!cell.piece) {
+                    const dy = Math.abs(row - this.gameState.duplicatePiece.row);
+                    const dx = Math.abs(col - this.gameState.duplicatePiece.col);
+                    
+                    if (dy <= 1 && dx <= 1) { // Apenas adjacente
+                        this.duplicatePiece(this.gameState.duplicatePiece, row, col);
+                        this.gameState.duplicateMode = false;
+                        this.gameState.duplicatePiece = null;
+                        this.clearHighlights();
+                    } else {
+                        this.addLog('Apenas casas adjacentes!');
+                    }
+                }
+                return;
+            }
+            
+            if (this.gameState.selectedCard && row >= 4) {
+                const cell = this.board[row][col];
+                if (!cell.piece) {
+                    this.placeCardFromHand(row, col);
+                }
+            } else if (this.gameState.selectedPiece) {
+                this.tryMovePiece(row, col);
+            }
+        }
+
+        // 🎯 BALANCEAMENTO: Perder pontos ao colocar peças
+        placeCardFromHand(row, col) {
+            const card = this.gameState.selectedCard;
+            const piece = this.createPieceOnBoard(card.data.type, row, col, 'player');
+            
+            const cardIndex = this.gameState.hand.findIndex(c => c.type === card.data.type);
+            if (cardIndex !== -1) {
+                this.gameState.hand.splice(cardIndex, 1);
+            }
+            
+            this.gameState.selectedCard = null;
+            this.clearHighlights();
+            this.updateHandUI();
+            
+            // 🎯 Penalidade baseada no valor da peça
+            const penalty = -card.data.points;
+            this.addScore(penalty);
+            
+            this.addLog(`Colocou ${card.data.name} (${penalty}pts)`);
+            this.flashTile(row, col, 0xe74c3c); // Flash vermelho para penalidade
+            
+            // Screen shake sutil
+            this.cameras.main.shake(100, 0.002);
+        }
+
+        tryMovePiece(targetRow, targetCol) {
+            const piece = this.gameState.selectedPiece;
+            const validMoves = this.getValidMoves(piece);
+            
+            const isValid = validMoves.some(m => m.row === targetRow && m.col === targetCol);
+            
+            if (!isValid) {
+                this.addLog('Movimento inválido!');
+                this.gameState.selectedPiece = null;
+                this.clearHighlights();
+                return;
+            }
+            
+            const targetCell = this.board[targetRow][targetCol];
+            let capturedPiece = null;
+            
+            if (targetCell.piece && targetCell.piece.owner === 'enemy') {
+                capturedPiece = targetCell.piece;
+                this.capturePiece(capturedPiece);
+            }
+            
+            this.movePiece(piece, targetRow, targetCol);
+            
+            this.gameState.movesThisTurn++;
+            this.gameState.selectedPiece = null;
+            this.clearHighlights();
+            
+            const movePoints = piece.data.points * this.gameState.pointsMultiplier;
+            this.addScore(Math.ceil(movePoints / 2));
+            
+            this.addLog(`Moveu ${piece.data.name} para (${targetRow},${targetCol})`);
+            
+            if (this.gameState.movesThisTurn >= this.gameState.maxMoves) {
+                this.movesText.setText(`Movimentos: 0`);
+            } else {
+                this.movesText.setText(`Movimentos: ${this.gameState.maxMoves - this.gameState.movesThisTurn}`);
+            }
+            
+            this.checkWinCondition();
+        }
+
+        movePiece(piece, newRow, newCol) {
+            this.board[piece.row][piece.col].piece = null;
+            
+            piece.row = newRow;
+            piece.col = newCol;
+            piece.movesMade++;
+            
+            this.board[newRow][newCol].piece = piece;
+            
+            const targetX = CONFIG.BOARD_OFFSET_X + newCol * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const targetY = CONFIG.BOARD_OFFSET_Y + newRow * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            
+            this.tweens.add({
+                targets: piece.container,
+                x: targetX,
+                y: targetY,
+                duration: 250,
+                ease: 'Power2'
+            });
+            
+            piece.hitZone.x = targetX;
+            piece.hitZone.y = targetY;
+            
+            this.flashTile(newRow, newCol, 0x4ecca3);
+        }
+
+        // 🎯 GAME JUICE: Animação de captura melhorada
+        capturePiece(piece) {
+            if (piece.isShielded) {
+                this.addLog('Peça protegida pelo escudo!');
+                piece.isShielded = false;
+                return;
+            }
+            
+            const points = piece.data.points * this.gameState.pointsMultiplier;
+            this.addScore(Math.ceil(points));
+            
+            this.board[piece.row][piece.col].piece = null;
+            
+            const index = this.gameState.enemyPieces.indexOf(piece);
+            if (index !== -1) {
+                this.gameState.enemyPieces.splice(index, 1);
+            }
+            
+            // 🎯 Screen shake impactante
+            this.cameras.main.shake(200, 0.01);
+            
+            // 🎯 Flash vermelho na tela
+            this.cameras.main.flash(100, 231, 76, 60);
+            
+            this.tweens.add({
+                targets: piece.container,
+                scale: 0,
+                angle: 720, // Mais rotações
+                duration: 500,
+                ease: 'Power2',
+                onComplete: () => {
+                    piece.container.destroy();
+                    piece.hitZone.destroy();
+                }
+            });
+            
+            this.createCaptureParticles(piece.row, piece.col, piece.data.color);
+            
+            this.addLog(`Capturou ${piece.data.name}! +${Math.ceil(points)}pts`);
+            
+            if (piece.type === 'QUEEN') {
+                this.addLog('⚠️ RAINHA INIMIGA CAPTURADA!');
+                this.cameras.main.shake(500, 0.02);
+            }
+        }
+
+        // 🎯 GAME JUICE: Partículas coloridas baseadas na peça
+        createCaptureParticles(row, col, color) {
+            const x = CONFIG.BOARD_OFFSET_X + col * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const y = CONFIG.BOARD_OFFSET_Y + row * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const hexColor = Phaser.Display.Color.HexStringToColor(color).color;
+            
+            for (let i = 0; i < 12; i++) { // Mais partículas
+                const particle = this.add.graphics();
+                particle.fillStyle(hexColor, 1);
+                particle.fillRect(-5, -5, 10, 10);
+                particle.x = x;
+                particle.y = y;
+                
+                const angle = (Math.PI * 2 / 12) * i;
+                const distance = 40 + Math.random() * 30;
+                
+                this.tweens.add({
+                    targets: particle,
+                    x: x + Math.cos(angle) * distance,
+                    y: y + Math.sin(angle) * distance,
+                    alpha: 0,
+                    scale: 0,
+                    angle: Math.random() * 360,
+                    duration: 600,
+                    ease: 'Power2',
+                    onComplete: () => particle.destroy()
+                });
+            }
+        }
+
+        flashTile(row, col, color) {
+            const x = CONFIG.BOARD_OFFSET_X + col * CONFIG.TILE_SIZE;
+            const y = CONFIG.BOARD_OFFSET_Y + row * CONFIG.TILE_SIZE;
+            
+            const flash = this.add.graphics();
+            flash.fillStyle(color, 0.5);
+            flash.fillRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+            
+            this.tweens.add({
+                targets: flash,
+                alpha: 0,
+                duration: 300,
+                onComplete: () => flash.destroy()
+            });
+        }
+
+        activateJoker(jokerData, container) {
+            if (this.gameState.gameOver) return;
+            
+            this.addLog(`Ativou: ${jokerData.name}!`);
+            
+            // 🎯 Game juice: animação de ativação
+            this.tweens.add({
+                targets: container,
+                scale: 1.3,
+                duration: 150,
+                yoyo: true,
+                onComplete: () => {
+                    this.applyJokerEffect(jokerData);
+                    
+                    const index = this.gameState.jokerHand.findIndex(j => j.type === jokerData.type);
+                    if (index !== -1) {
+                        this.gameState.jokerHand.splice(index, 1);
+                    }
+                    this.updateJokerUI();
+                }
+            });
+            
+            this.cameras.main.flash(200, 241, 196, 15);
+        }
+
+        applyJokerEffect(jokerData) {
+            switch (jokerData.effect) {
+                case 'doubleMove':
+                    this.gameState.maxMoves += 1;
+                    this.movesText.setText(`Movimentos: ${this.gameState.maxMoves - this.gameState.movesThisTurn}`);
+                    this.addLog('+1 movimento neste turno!');
+                    break;
+                    
+                case 'swap':
+                    this.swapEnemyPiece();
+                    break;
+                    
+                case 'doublePoints':
+                    this.gameState.pointsMultiplier = 2;
+                    this.multiplierText.setText(`Multiplicador: x2`);
+                    this.multiplierText.setColor('#e74c3c');
+                    this.addLog('Pontos dobrados neste turno!');
+                    break;
+                    
+                case 'shield':
+                    this.shieldPlayerPiece();
+                    break;
+                    
+                case 'extraDraw':
+                    this.drawCards(2);
+                    this.addLog('+2 cartas compradas!');
+                    break;
+                    
+                case 'teleport':
+                    this.activateTeleportMode();
+                    break;
+                    
+                // 🆕 NOVOS EFEITOS
+                case 'bomb':
+                    this.bombEffect();
+                    break;
+                    
+                case 'reinforce':
+                    this.reinforceEffect();
+                    break;
+                    
+                case 'timeWarp':
+                    this.timeWarpEffect();
+                    break;
+                    
+                case 'invert':
+                    this.invertEffect();
+                    break;
+                    
+                case 'duplicate':
+                    this.activateDuplicateMode();
+                    break;
+                    
+                case 'poison':
+                    this.poisonEffect();
+                    break;
+            }
+            
+            this.gameState.activeJokers.push(jokerData.effect);
+        }
+
+        swapEnemyPiece() {
+            if (this.gameState.enemyPieces.length === 0) return;
+            
+            const randomPiece = this.gameState.enemyPieces[
+                Math.floor(Math.random() * this.gameState.enemyPieces.length)
+            ];
+            
+            let targetRow, targetCol;
+            let attempts = 0;
+            do {
+                targetRow = Math.floor(Math.random() * CONFIG.BOARD_SIZE);
+                targetCol = Math.floor(Math.random() * CONFIG.BOARD_SIZE);
+                attempts++;
+            } while (this.board[targetRow][targetCol].piece && attempts < 50);
+            
+            if (attempts >= 50) return;
+            
+            this.board[randomPiece.row][randomPiece.col].piece = null;
+            randomPiece.row = targetRow;
+            randomPiece.col = targetCol;
+            this.board[targetRow][targetCol].piece = randomPiece;
+            
+            const targetX = CONFIG.BOARD_OFFSET_X + targetCol * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const targetY = CONFIG.BOARD_OFFSET_Y + targetRow * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            
+            this.tweens.add({
+                targets: randomPiece.container,
+                x: targetX,
+                y: targetY,
+                duration: 400,
+                ease: 'Power2'
+            });
+            randomPiece.hitZone.x = targetX;
+            randomPiece.hitZone.y = targetY;
+            
+            this.addLog(`Peça inimiga trocada para (${targetRow},${targetCol})!`);
+        }
+
+        shieldPlayerPiece() {
+            if (this.gameState.playerPieces.length === 0) return;
+            
+            const randomPiece = this.gameState.playerPieces[
+                Math.floor(Math.random() * this.gameState.playerPieces.length)
+            ];
+            randomPiece.isShielded = true;
+            
+            const shield = this.add.graphics();
+            shield.lineStyle(3, 0x2ecc71, 0.8);
+            shield.strokeCircle(0, 0, 32);
+            randomPiece.container.add(shield);
+            
+            // 🎯 CORREÇÃO PREVENTIVA: Para qualquer tween de scale anterior e reseta para 1
+            // Isso evita que o yoyo volte para um valor "sujo" (como 0.1)
+            randomPiece.container.setScale(1);
+            
+            this.tweens.add({
+                targets: randomPiece.container,
+                scale: 1.3,
+                duration: 200,
+                yoyo: true
+            });
+            
+            this.addLog(`${randomPiece.data.name} protegida pelo escudo!`);
+        }
+
+        // 🎯 TELEPORTE CORRIGIDO: Ativa modo de seleção
+        activateTeleportMode() {
+            this.addLog('Modo Teleporte ATIVO!');
+            this.addLog('Clique numa peça sua para selecionar');
+            this.gameState.teleportMode = true;
+            
+            // Destacar todas as peças do jogador
+            this.gameState.playerPieces.forEach(piece => {
+                const glow = this.add.graphics();
+                glow.lineStyle(3, 0x1abc9c, 0.9);
+                glow.strokeCircle(0, 0, 34);
+                piece.container.add(glow);
+                
+                this.tweens.add({
+                    targets: glow,
+                    alpha: 0.5,
+                    duration: 500,
+                    yoyo: true,
+                    repeat: 5
+                });
+            });
+        }
+
+        // 🎯 Executa o teleporte
+        teleportPiece(piece, newRow, newCol) {
+            this.board[piece.row][piece.col].piece = null;
+            piece.row = newRow;
+            piece.col = newCol;
+            this.board[newRow][newCol].piece = piece;
+            
+            const targetX = CONFIG.BOARD_OFFSET_X + newCol * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const targetY = CONFIG.BOARD_OFFSET_Y + newRow * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            
+            // 🎯 CORREÇÃO: Animação de saída (fade out e encolhe)
+            this.tweens.add({
+                targets: piece.container,
+                alpha: 0,
+                scale: 0.5,
+                duration: 150,
+                ease: 'Power2',
+                onComplete: () => {
+                    // Move para a nova posição
+                    piece.container.x = targetX;
+                    piece.container.y = targetY;
+                    piece.hitZone.x = targetX;
+                    piece.hitZone.y = targetY;
+                    
+                    // 🎯 CORREÇÃO: Animação de entrada FORÇANDO scale: 1 e alpha: 1
+                    // Sem yoyo, usando dois tweens encadeados para garantir o valor final.
+                    this.tweens.add({
+                        targets: piece.container,
+                        alpha: 1,
+                        scale: 1, 
+                        duration: 200,
+                        ease: 'Back.easeOut'
+                    });
+                }
+            });
+            
+            this.flashTile(newRow, newCol, 0x1abc9c);
+            this.addLog(`Teleportou para (${newRow},${newCol})!`);
+            this.cameras.main.flash(150, 26, 188, 156);
+        }
+
+        // 🆕 NOVO CORINGA: Bomba
+        bombEffect() {
+            if (this.gameState.enemyPieces.length === 0) return;
+            
+            const targetPiece = this.gameState.enemyPieces[
+                Math.floor(Math.random() * this.gameState.enemyPieces.length)
+            ];
+            
+            this.addLog(`💣 Bomba explodiu ${targetPiece.data.name}!`);
+            this.cameras.main.shake(300, 0.015);
+            
+            // Captura a peça
+            this.capturePiece(targetPiece);
+        }
+
+        // 🆕 NOVO CORINGA: Reforço
+        reinforceEffect() {
+            const pieceKeys = Object.keys(PIECE_TYPES);
+            for (let i = 0; i < 2; i++) {
+                const randomKey = pieceKeys[Math.floor(Math.random() * pieceKeys.length)];
+                const card = { type: randomKey, ...PIECE_TYPES[randomKey] };
+                this.gameState.hand.push(card);
+            }
+            this.updateHandUI();
+            this.addLog('📦 +2 peças adicionadas à mão!');
+        }
+
+        // 🆕 NOVO CORINGA: Tempo Extra
+        timeWarpEffect() {
+            this.gameState.turnTime += 15;
+            this.timerText.setText(`⏱ ${this.gameState.turnTime}s`);
+            this.addLog('⏰ +15 segundos!');
+            this.cameras.main.flash(200, 52, 152, 219);
+        }
+
+        // 🆕 NOVO CORINGA: Inverter
+        invertEffect() {
+            if (this.gameState.enemyPieces.length < 2) return;
+            
+            const piece1 = this.gameState.enemyPieces[
+                Math.floor(Math.random() * this.gameState.enemyPieces.length)
+            ];
+            const piece2 = this.gameState.enemyPieces[
+                Math.floor(Math.random() * this.gameState.enemyPieces.length)
+            ];
+            
+            if (piece1 === piece2) return;
+            
+            // Troca posições
+            const tempRow = piece1.row;
+            const tempCol = piece1.col;
+            
+            this.board[piece1.row][piece1.col].piece = null;
+            this.board[piece2.row][piece2.col].piece = null;
+            
+            piece1.row = piece2.row;
+            piece1.col = piece2.col;
+            piece2.row = tempRow;
+            piece2.col = tempCol;
+            
+            this.board[piece1.row][piece1.col].piece = piece1;
+            this.board[piece2.row][piece2.col].piece = piece2;
+            
+            // Animação
+            const targetX1 = CONFIG.BOARD_OFFSET_X + piece1.col * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const targetY1 = CONFIG.BOARD_OFFSET_Y + piece1.row * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const targetX2 = CONFIG.BOARD_OFFSET_X + piece2.col * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            const targetY2 = CONFIG.BOARD_OFFSET_Y + piece2.row * CONFIG.TILE_SIZE + CONFIG.TILE_SIZE / 2;
+            
+            this.tweens.add({
+                targets: piece1.container,
+                x: targetX1,
+                y: targetY1,
+                duration: 400,
+                ease: 'Power2'
+            });
+            piece1.hitZone.x = targetX1;
+            piece1.hitZone.y = targetY1;
+            
+            this.tweens.add({
+                targets: piece2.container,
+                x: targetX2,
+                y: targetY2,
+                duration: 400,
+                ease: 'Power2'
+            });
+            piece2.hitZone.x = targetX2;
+            piece2.hitZone.y = targetY2;
+            
+            this.addLog('🔀 Peças inimigas invertidas!');
+        }
+
+        // 🆕 NOVO CORINGA: Duplicar (ativa modo)
+        activateDuplicateMode() {
+            if (this.gameState.playerPieces.length === 0) return;
+            
+            this.addLog('Modo Duplicar ATIVO!');
+            this.addLog('Clique numa peça sua para duplicar');
+            this.gameState.duplicateMode = true;
+            
+            this.gameState.playerPieces.forEach(piece => {
+                const glow = this.add.graphics();
+                glow.lineStyle(3, 0xf39c12, 0.9);
+                glow.strokeCircle(0, 0, 34);
+                piece.container.add(glow);
+                
+                this.tweens.add({
+                    targets: glow,
+                    alpha: 0.5,
+                    duration: 500,
+                    yoyo: true,
+                    repeat: 5
+                });
+            });
+        }
+
+        // 🆕 Executa duplicação
+        duplicatePiece(piece, newRow, newCol) {
+            const newPiece = this.createPieceOnBoard(piece.type, newRow, newCol, 'player');
+            this.addLog(`👥 ${piece.data.name} duplicada!`);
+            this.cameras.main.flash(200, 243, 156, 18);
+        }
+
+        // 🆕 NOVO CORINGA: Veneno
+        poisonEffect() {
+            if (this.gameState.enemyPieces.length === 0) return;
+            
+            const targetPiece = this.gameState.enemyPieces[
+                Math.floor(Math.random() * this.gameState.enemyPieces.length)
+            ];
+            
+            targetPiece.poisonTurns = 2;
+            
+            // Efeito visual de veneno
+            const poison = this.add.graphics();
+            poison.fillStyle(0x27ae60, 0.6);
+            poison.fillCircle(0, 0, 20);
+            targetPiece.container.add(poison);
+            
+            this.tweens.add({
+                targets: poison,
+                alpha: 0.3,
+                duration: 500,
+                yoyo: true,
+                repeat: -1
+            });
+            
+            this.addLog(`☠️ ${targetPiece.data.name} envenenada!`);
+            this.addLog('Morre em 2 turnos!');
+        }
+
+        onTileHover(tile) {
+            const { row, col } = tile;
+            const x = CONFIG.BOARD_OFFSET_X + col * CONFIG.TILE_SIZE;
+            const y = CONFIG.BOARD_OFFSET_Y + row * CONFIG.TILE_SIZE;
+            
+            if (!this.hoverTile) {
+                this.hoverTile = this.add.graphics();
+            }
+            this.hoverTile.clear();
+            this.hoverTile.lineStyle(2, 0xffffff, 0.6);
+            this.hoverTile.strokeRect(x, y, CONFIG.TILE_SIZE, CONFIG.TILE_SIZE);
+        }
+
+        onTileOut(tile) {
+            if (this.hoverTile) {
+                this.hoverTile.clear();
+            }
+        }
+
+        endTurn() {
+            if (this.gameState.gameOver) return;
+            
+            this.addLog('--- Turno finalizado ---');
+            
+            // 🆕 Processar veneno
+            this.processPoison();
+            
+            this.gameState.movesThisTurn = 0;
+            this.gameState.maxMoves = 1;
+            this.gameState.pointsMultiplier = 1;
+            this.gameState.activeJokers = [];
+            this.gameState.selectedCard = null;
+            this.gameState.selectedPiece = null;
+            this.gameState.teleportMode = false;
+            this.gameState.teleportPiece = null;
+            this.gameState.duplicateMode = false;
+            this.gameState.duplicatePiece = null;
+            this.clearHighlights();
+            
+            this.multiplierText.setText('Multiplicador: x1');
+            this.multiplierText.setColor('#ffffff');
+            this.movesText.setText('Movimentos: 1');
+            
+            this.gameState.phase = 'enemy';
+            this.phaseText.setText('Fase: Inimigo');
+            this.phaseText.setColor('#e74c3c');
+            
+            this.time.delayedCall(500, () => this.enemyTurn());
+        }
+
+        // 🆕 Processa peças envenenadas
+        processPoison() {
+            const toRemove = [];
+            
+            this.gameState.enemyPieces.forEach(piece => {
+                if (piece.poisonTurns > 0) {
+                    piece.poisonTurns--;
+                    if (piece.poisonTurns === 0) {
+                        toRemove.push(piece);
+                    }
+                }
+            });
+            
+            toRemove.forEach(piece => {
+                this.addLog(`☠️ ${piece.data.name} morreu de veneno!`);
+                this.capturePiece(piece);
+            });
+        }
+
+        enemyTurn() {
+            this.addLog('Turno do inimigo...');
+            
+            const enemyPieces = this.gameState.enemyPieces.filter(p => p && p.owner === 'enemy');
+            
+            if (enemyPieces.length === 0) {
+                this.addLog('Inimigo sem peças!');
+                this.startNewTurn();
+                return;
+            }
+            
+            const piece = enemyPieces[Math.floor(Math.random() * enemyPieces.length)];
+            const validMoves = this.getValidMovesForEnemy(piece);
+            
+            if (validMoves.length > 0) {
+                const captureMove = validMoves.find(m => 
+                    this.board[m.row][m.col].piece && 
+                    this.board[m.row][m.col].piece.owner === 'player'
+                );
+                
+                const chosenMove = captureMove || validMoves[Math.floor(Math.random() * validMoves.length)];
+                
+                const targetCell = this.board[chosenMove.row][chosenMove.col];
+                if (targetCell.piece && targetCell.piece.owner === 'player') {
+                    this.capturePlayerPiece(targetCell.piece);
+                }
+                
+                this.movePiece(piece, chosenMove.row, chosenMove.col);
+                this.addLog(`Inimigo moveu ${piece.data.name} para (${chosenMove.row},${chosenMove.col})`);
+            } else {
+                this.addLog('Inimigo não pode mover.');
+            }
+            
+            this.time.delayedCall(800, () => this.startNewTurn());
+        }
+
+        getValidMovesForEnemy(piece) {
+            return this.getValidMoves(piece);
+        }
+
+        capturePlayerPiece(piece) {
+            if (!piece) return;
+            
+            if (piece.isShielded) {
+                this.addLog('Escudo protegeu sua peça!');
+                piece.isShielded = false;
+                return;
+            }
+            
+            this.addLog(`Inimigo capturou sua ${piece.data.name}!`);
+            
+            this.board[piece.row][piece.col].piece = null;
+            
+            const index = this.gameState.playerPieces.indexOf(piece);
+            if (index !== -1) {
+                this.gameState.playerPieces.splice(index, 1);
+            }
+            
+            this.tweens.add({
+                targets: piece.container,
+                scale: 0,
+                angle: 360,
+                alpha: 0,
+                duration: 400,
+                onComplete: () => {
+                    piece.container.destroy();
+                    piece.hitZone.destroy();
+                }
+            });
+            
+            this.createCaptureParticles(piece.row, piece.col, piece.data.color);
+        }
+
+        startNewTurn() {
+            this.gameState.turn++;
+            this.gameState.phase = 'action';
+            this.gameState.movesThisTurn = 0;
+            this.gameState.maxMoves = 1;
+            this.gameState.pointsMultiplier = 1;
+            this.gameState.turnTime = CONFIG.TURN_TIME;
+            
+            this.turnText.setText(`Turno: ${this.gameState.turn}`);
+            this.phaseText.setText('Fase: Ação');
+            this.phaseText.setColor('#4ecca3');
+            this.timerText.setText(`⏱ ${this.gameState.turnTime}s`);
+            this.movesText.setText('Movimentos: 1');
+            this.multiplierText.setText('Multiplicador: x1');
+            this.multiplierText.setColor('#ffffff');
+            
+            this.drawCards(1);
+            if (this.gameState.turn % 3 === 0) {
+                this.drawJokers(1);
+            }
+            
+            this.addLog(`--- Turno ${this.gameState.turn} ---`);
+            
+            // 🎯 BÔNUS POR SOBREVIVÊNCIA (aumentado)
+            if (this.gameState.turn % 3 === 0) {
+                const bonus = 5; // +5 pontos a cada 3 turnos
+                this.addScore(bonus);
+                this.addLog(`Bônus de sobrevivência: +${bonus}pts!`);
+            }
+            
+            // 🎯 SISTEMA DE REFORÇOS INIMIGOS
+            if (this.gameState.turn % 3 === 0 && this.gameState.enemyPieces.length > 0) {
+                this.spawnEnemyReinforcements();
+            }
+            
+            // Verificar condição de vitória após mudanças
+            this.checkWinCondition();
+        }
+
+                // 🎯 SISTEMA DE REFORÇOS INIMIGOS
+        spawnEnemyReinforcements() {
+            if (this.gameState.enemyPieces.length === 0) return;
+            
+            this.addLog('⚠️ Reforços inimigos chegando!');
+            this.cameras.main.shake(200, 0.005);
+            
+            const reinforcementTypes = ['PAWN', 'PAWN', 'KNIGHT', 'BISHOP'];
+            const numReinforcements = Math.min(2, 6 - this.gameState.enemyPieces.length);
+            
+            for (let i = 0; i < numReinforcements; i++) {
+                let attempts = 0;
+                let row, col;
+                
+                do {
+                    row = Math.floor(Math.random() * 2);
+                    col = Math.floor(Math.random() * CONFIG.BOARD_SIZE);
+                    attempts++;
+                } while (this.board[row][col].piece && attempts < 20);
+                
+                if (attempts < 20) {
+                    const type = reinforcementTypes[Math.floor(Math.random() * reinforcementTypes.length)];
+                    const newPiece = this.createPieceOnBoard(type, row, col, 'enemy');
+                    
+                    // 🎯 CORREÇÃO: Espera a animação de spawn (300ms) terminar 
+                    // antes de iniciar o efeito de "pulse". Assim os tweens não brigam.
+                    this.time.delayedCall(350, () => {
+                        if (newPiece && newPiece.container && newPiece.container.active) {
+                            this.tweens.add({
+                                targets: newPiece.container,
+                                scale: 1.2,
+                                duration: 200,
+                                yoyo: true,
+                                ease: 'Sine.easeInOut'
+                            });
+                        }
+                    });
+                    
+                    this.addLog(`+ ${newPiece.data.name} em (${row},${col})`);
+                }
+            }
+        }
+
+        setupTimer() {
+            this.timer = this.time.addEvent({
+                delay: 1000,
+                callback: () => {
+                    if (this.gameState.phase !== 'enemy' && !this.gameState.gameOver) {
+                        this.gameState.turnTime--;
+                        this.timerText.setText(`⏱ ${this.gameState.turnTime}s`);
+                        
+                        if (this.gameState.turnTime <= 5) {
+                            this.timerText.setColor('#e74c3c');
+                        }
+                        
+                        if (this.gameState.turnTime <= 0) {
+                            this.addLog('Tempo esgotado!');
+                            this.endTurn();
+                        }
+                    }
+                },
+                loop: true
+            });
+        }
+
+        addScore(points) {
+            this.gameState.score += points;
+            this.scoreText.setText(`Pontos: ${this.gameState.score}/${CONFIG.WIN_SCORE}`);
+            
+            // 🎯 Game juice: cor baseada em positivo/negativo
+            const color = points >= 0 ? '#4ecca3' : '#e74c3c';
+            
+            const scoreAnim = this.add.text(
+                CONFIG.BOARD_OFFSET_X + CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE / 2,
+                CONFIG.BOARD_OFFSET_Y - 20,
+                `${points >= 0 ? '+' : ''}${points}`, {
+                fontSize: '24px',
+                color: color,
+                fontFamily: 'Courier New',
+                fontStyle: 'bold'
+            }).setOrigin(0.5);
+            
+            this.tweens.add({
+                targets: scoreAnim,
+                y: scoreAnim.y - 40,
+                alpha: 0,
+                duration: 800,
+                ease: 'Power2',
+                onComplete: () => scoreAnim.destroy()
+            });
+            
+            if (this.gameState.score >= CONFIG.WIN_SCORE * 0.8) {
+                this.scoreText.setColor('#f1c40f');
+            }
+        }
+            
+        checkWinCondition() {
+            const queenAlive = this.gameState.enemyPieces.some(p => p.type === 'QUEEN');
+            const allEnemiesDead = this.gameState.enemyPieces.length === 0;
+            
+            // 🎯 VITÓRIA: Eliminou a rainha COM pontos suficientes
+            if (!queenAlive && this.gameState.score >= CONFIG.WIN_SCORE) {
+                this.victory();
+                return;
+            }
+            
+            // 🎯 DERROTA: Eliminou todas as peças sem pontos suficientes
+            if (allEnemiesDead && this.gameState.score < CONFIG.WIN_SCORE) {
+                this.addLog('⚠️ Todas as peças eliminadas!');
+                this.addLog(`Faltam ${CONFIG.WIN_SCORE - this.gameState.score} pontos!`);
+                this.addLog('💀 DERROTA POR ELIMINAÇÃO!');
+                
+                // Pequeno delay antes da derrota
+                this.time.delayedCall(1500, () => {
+                    this.defeat();
+                });
+                return;
+            }
+            
+            // 🎯 Rainha eliminada mas falta pontos (continua jogando)
+            if (!queenAlive && this.gameState.score < CONFIG.WIN_SCORE) {
+                this.addLog('Rainha eliminada!');
+                this.addLog(`Precisa de mais ${CONFIG.WIN_SCORE - this.gameState.score} pontos.`);
+            }
+            
+            // Derrota: sem peças do jogador e sem cartas
+            if (this.gameState.playerPieces.length === 0 && this.gameState.hand.length === 0) {
+                this.defeat();
+            }
+        }
+
+        victory() {
+            this.gameState.gameOver = true;
+            this.cameras.main.shake(500, 0.01);
+            this.cameras.main.flash(500, 78, 204, 163);
+            
+            const overlay = this.add.graphics();
+            overlay.fillStyle(0x000000, 0.8);
+            overlay.fillRect(0, 0, this.cameras.main.width, this.cameras.main.height);
+            
+            const victoryText = this.add.text(
+                this.cameras.main.width / 2,
+                this.cameras.main.height / 2 - 50,
+                '🏆 VITÓRIA! 🏆', {
+                fontSize: '48px',
+                color: '#4ecca3',
+                fontFamily: 'Courier New',
+                fontStyle: 'bold'
+            }).setOrigin(0.5);
+            
+            const statsText = this.add.text(
+                this.cameras.main.width / 2,
+                this.cameras.main.height / 2 + 20,
+                `Pontuação: ${this.gameState.score}\n` +
+                `Turnos: ${this.gameState.turn}\n` +
+                `Peças restantes: ${this.gameState.playerPieces.length}\n` +
+                `Coringas usados: ${this.gameState.activeJokers.length}`, {
+                fontSize: '16px',
+                color: '#ffffff',
+                fontFamily: 'Courier New',
+                align: 'center'
+            }).setOrigin(0.5);
+            
+            const restartBtn = this.add.text(
+                this.cameras.main.width / 2,
+                this.cameras.main.height / 2 + 120,
+                '[ JOGAR NOVAMENTE ]', {
+                fontSize: '18px',
+                color: '#e94560',
+                fontFamily: 'Courier New',
+                fontStyle: 'bold',
+                padding: { x: 20, y: 10 }
+            }).setOrigin(0.5).setInteractive();
+            
+            restartBtn.on('pointerdown', () => this.scene.restart());
+        }
+
+        defeat() {
+            this.gameState.gameOver = true;
+            this.cameras.main.shake(300, 0.02);
+            
+            const overlay = this.add.graphics();
+            overlay.fillStyle(0x000000, 0.8);
+            overlay.fillRect(0, 0, this.cameras.main.width, this.cameras.main.height);
+            
+            // Determinar motivo da derrota
+            let defeatReason = 'Suas peças foram eliminadas!';
+            if (this.gameState.enemyPieces.length === 0) {
+                defeatReason = 'Eliminou todas as peças sem pontos suficientes!';
+            }
+            
+            this.add.text(
+                this.cameras.main.width / 2,
+                this.cameras.main.height / 2 - 50,
+                '💀 DERROTA 💀', {
+                fontSize: '48px',
+                color: '#e94560',
+                fontFamily: 'Courier New',
+                fontStyle: 'bold'
+            }).setOrigin(0.5);
+            
+            this.add.text(
+                this.cameras.main.width / 2,
+                this.cameras.main.height / 2 + 10,
+                defeatReason, {
+                fontSize: '14px',
+                color: '#f39c12',
+                fontFamily: 'Courier New',
+                align: 'center'
+            }).setOrigin(0.5);
+            
+            this.add.text(
+                this.cameras.main.width / 2,
+                this.cameras.main.height / 2 + 50,
+                `Pontuação: ${this.gameState.score}/${CONFIG.WIN_SCORE}\n` +
+                `Turnos sobrevividos: ${this.gameState.turn}`, {
+                fontSize: '16px',
+                color: '#ffffff',
+                fontFamily: 'Courier New',
+                align: 'center'
+            }).setOrigin(0.5);
+            
+            const restartBtn = this.add.text(
+                this.cameras.main.width / 2,
+                this.cameras.main.height / 2 + 120,
+                '[ TENTAR NOVAMENTE ]', {
+                fontSize: '18px',
+                color: '#e94560',
+                fontFamily: 'Courier New',
+                fontStyle: 'bold',
+                padding: { x: 20, y: 10 }
+            }).setOrigin(0.5).setInteractive();
+            
+            restartBtn.on('pointerdown', () => this.scene.restart());
+        }
+
+        addLog(message) {
+            if (!this.logMessages) this.logMessages = [];
+            this.logMessages.push(message);
+            
+            if (this.logMessages.length > 5) {
+                this.logMessages.shift();
+            }
+            
+            if (this.logText) {
+                this.logText.setText(this.logMessages.join('\n'));
+            }
+        }
+
+        toggleHelp() {
+            if (this.helpPanel) {
+                this.helpPanel.destroy();
+                this.helpPanel = null;
+                return;
+            }
+            
+            this.helpPanel = this.add.container(0, 0);
+            
+            const bg = this.add.graphics();
+            bg.fillStyle(0x16213e, 0.95);
+            bg.fillRoundedRect(250, 50, 500, 500, 12);
+            bg.lineStyle(3, 0xe94560, 1);
+            bg.strokeRoundedRect(250, 50, 500, 500, 12);
+            this.helpPanel.add(bg);
+
+            const helpContent = `
+╔══════════════════════════════════════╗
+║         COMO JOGAR                    ║
+╠══════════════════════════════════════╣
+║                                       ║
+║ 1. Selecione uma carta da mão        ║
+║    (parte inferior)                   ║
+║                                       ║
+║ 2. Clique no tabuleiro para          ║
+║    colocar a peça (linhas 4-5)       ║
+║    ⚠️ Você PERDE pontos ao colocar!  ║
+║                                       ║
+║ 3. Clique numa peça sua para         ║
+║    selecioná-la e depois clique      ║
+║    onde quer mover                    ║
+║                                       ║
+║ 4. Use coringas para efeitos         ║
+║    especiais (painel direito)        ║
+║                                       ║
+║ 5. Elimine a RAINHA inimiga com      ║
+║    ${CONFIG.WIN_SCORE}+ pontos para vencer!           ║
+║                                       ║
+║ CORINGAS (12 tipos!):                 ║
+║ ⚡ Movimento Duplo                    ║
+║ 🔄 Troca de Peça                     ║
+║ ✨ Pontos x2                          ║
+║ 🛡 Escudo                             ║
+║ 🃏 Compra Extra                       ║
+║ 🌀 Teleporte                          ║
+║ 💣 Bomba                              ║
+║ 📦 Reforço                            ║
+║ ⏰ Tempo Extra                        ║
+║ 🔀 Inverter                           ║
+║ 👥 Duplicar                           ║
+║ ☠️ Veneno                             ║
+║                                       ║
+║  Clique aqui para fechar              ║
+╚══════════════════════════════════════╝`;
+
+            const text = this.add.text(270, 60, helpContent, {
+                fontSize: '11px',
+                color: '#ecf0f1',
+                fontFamily: 'Courier New',
+                lineSpacing: 4
+            });
+            this.helpPanel.add(text);
+            
+            const closeZone = this.add.rectangle(500, 300, 500, 500)
+                .setInteractive()
+                .on('pointerdown', () => this.toggleHelp());
+            this.helpPanel.add(closeZone);
+        }
+
+        showInstructions() {
+            const instruction = this.add.text(
+                CONFIG.BOARD_OFFSET_X + (CONFIG.BOARD_SIZE * CONFIG.TILE_SIZE) / 2,
+                CONFIG.BOARD_OFFSET_Y - 30,
+                '🎮 Selecione cartas abaixo e coloque no tabuleiro | Clique em peças para mover', {
+                fontSize: '12px',
+                color: '#f1c40f',
+                fontFamily: 'Courier New'
+            }).setOrigin(0.5);
+            
+            this.tweens.add({
+                targets: instruction,
+                alpha: 0.3,
+                duration: 1000,
+                yoyo: true,
+                repeat: 3,
+                onComplete: () => {
+                    this.tweens.add({
+                        targets: instruction,
+                        alpha: 0,
+                        duration: 500,
+                        delay: 2000,
+                        onComplete: () => instruction.destroy()
+                    });
+                }
+            });
+        }
+
+        shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        }
+
+        update() {
+        }
+    }
+
+    class MenuScene extends Phaser.Scene {
+        constructor() {
+            super({ key: 'MenuScene' });
+        }
+
+        create() {
+            const bg = this.add.graphics();
+            bg.fillStyle(0x0f0f23, 1);
+            bg.fillRect(0, 0, 800, 600);
+
+            bg.lineStyle(1, 0x1a1a3e, 0.5);
+            for (let i = 0; i < 800; i += 50) {
+                bg.moveTo(i, 0);
+                bg.lineTo(i, 600);
+            }
+            for (let i = 0; i < 600; i += 50) {
+                bg.moveTo(0, i);
+                bg.lineTo(800, i);
+            }
+            bg.strokePath();
+
+            const title = this.add.text(400, 150, '♚ CHESS ROGUE', {
+                fontSize: '52px',
+                color: '#e94560',
+                fontFamily: 'Courier New',
+                fontStyle: 'bold',
+                stroke: '#000000',
+                strokeThickness: 6
+            }).setOrigin(0.5);
+
+            this.add.text(400, 210, 'Deck Building + Xadrez', {
+                fontSize: '18px',
+                color: '#4ecca3',
+                fontFamily: 'Courier New'
+            }).setOrigin(0.5);
+
+            const pieces = ['♜', '♞', '♝', '♛', '♟'];
+            pieces.forEach((piece, i) => {
+                const p = this.add.text(250 + i * 70, 280, piece, {
+                    fontSize: '36px',
+                    color: '#ffffff'
+                }).setOrigin(0.5);
+                
+                this.tweens.add({
+                    targets: p,
+                    y: 270,
+                    duration: 1000 + i * 200,
+                    yoyo: true,
+                    repeat: -1,
+                    ease: 'Sine.easeInOut'
+                });
+            });
+
+            const playBtn = this.add.text(400, 380, '[ JOGAR ]', {
+                fontSize: '28px',
+                color: '#4ecca3',
+                fontFamily: 'Courier New',
+                fontStyle: 'bold',
+                padding: { x: 40, y: 15 }
+            }).setOrigin(0.5).setInteractive();
+
+            playBtn.on('pointerover', () => {
+                playBtn.setColor('#ffffff');
+                this.tweens.add({
+                    targets: playBtn,
+                    scale: 1.1,
+                    duration: 150
+                });
+            });
+            playBtn.on('pointerout', () => {
+                playBtn.setColor('#4ecca3');
+                playBtn.setScale(1);
+            });
+            playBtn.on('pointerdown', () => {
+                this.cameras.main.fadeOut(500, 0, 0, 0);
+                this.time.delayedCall(500, () => {
+                    this.scene.start('GameScene');
+                });
+            });
+
+            this.add.text(400, 470, '• Selecione peças do deck\n• Coloque no tabuleiro 6x6\n• Mova e capture o Rei inimigo\n• Use Coringas para efeitos especiais', {
+                fontSize: '12px',
+                color: '#95a5a6',
+                fontFamily: 'Courier New',
+                align: 'center',
+                lineSpacing: 6
+            }).setOrigin(0.5);
+
+            this.add.text(400, 570, 'v1.0 - Phaser 3', {
+                fontSize: '10px',
+                color: '#34495e',
+                fontFamily: 'Courier New'
+            }).setOrigin(0.5);
+
+            this.cameras.main.fadeIn(500, 0, 0, 0);
+
+            this.tweens.add({
+                targets: title,
+                scale: 1.05,
+                duration: 1500,
+                yoyo: true,
+                repeat: -1,
+                ease: 'Sine.easeInOut'
+            });
+        }
+    }
+
+    const config = {
+        type: Phaser.AUTO,
+        width: 960,
+        height: 700,
+        parent: 'game-container',
+        backgroundColor: '#0f0f23',
+        scene: [MenuScene, GameScene],
+        pixelArt: true,
+        render: {
+            antialias: false,
+            pixelArt: true,
+            roundPixels: true
+        }
+    };
+
+    const game = new Phaser.Game(config);
+    </script>
+</body>
+</html>
